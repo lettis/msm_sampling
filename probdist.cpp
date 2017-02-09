@@ -4,39 +4,36 @@
 #include <iostream>
 #include <random>
 #include <algorithm>
-#include <functional>
 #include <map>
+#include <unordered_set>
+#include <unordered_map>
 
 #include <omp.h>
 
 #include "probdist.hpp"
-
-
-float
-compute_dist2_cutoff(std::vector<std::pair<float, float>> mm
-                   , float dist2_ratio) {
-  unsigned int ncol = mm.size();
-  float dist2=0;
-  for (unsigned int j=0; j < ncol; ++j) {
-    float d = mm[j].second - mm[j].first;
-    dist2 += d*d;
-  }
-  return dist2 * dist2_ratio;
-}
+#include "tools.hpp"
 
 
 double
-squared_dist_prob(const std::vector<float>& xs
-                , float dist2
-                , const std::vector<double>& probs
-                , const std::vector<std::vector<float>>& coords) {
+sum_probs(const std::list<Sample>& samples) {
+  double sum = 0.0;
+  for (Sample s: samples) {
+    sum += s.first;
+  }
+  return sum;
+}
+
+double
+prob_estimate(const std::vector<float>& xs
+            , float dist2
+            , const std::vector<double>& probs
+            , const std::vector<std::vector<float>>& coords) {
   unsigned int nrow = coords.size();
   unsigned int ncol = xs.size();
-
   float d, d2;
   unsigned int i,j;
-  
   double p=0;
+
   #pragma omp parallel for\
     default(none)\
     private(i,j,d,d2)\
@@ -56,45 +53,124 @@ squared_dist_prob(const std::vector<float>& xs
   return p;
 }
 
-
-
-std::deque<std::vector<float>>
+std::list<Sample>
 sample_n(unsigned int n
-       , std::vector<std::pair<float,float>> min_max
        , const std::vector<double>& probs
+       , const std::vector<std::pair<float,float>>& min_max_coords
        , const std::vector<std::vector<float>>& coords
-       , const float dist2_ratio) {
+       , float radius) {
   // initialize random number generator
-  std::random_device rd;
   auto dice = std::bind(std::uniform_real_distribution<double>(0.0, 1.0)
-                      , std::mt19937(rd()));
+                      , std::mt19937(std::random_device()()));
   // prepare sampling
-  std::deque<std::vector<float>> samples;
-  float dist2 = compute_dist2_cutoff(min_max
-                                   , dist2_ratio);
-  unsigned int ncol = min_max.size();
+  std::list<Sample> samples;
+  float dist2 = radius*radius;
+  unsigned int ncol = min_max_coords.size();
   // sampling
   for (unsigned int i=0; i < n; ++i) {
-
-    std::cerr << i << " / " << n << std::endl;
-
+    // get coordinates
     std::vector<float> xs(ncol);
-    bool sample_not_found = true;
-    while (sample_not_found) {
-      for (unsigned int j=0; j < ncol; ++j) {
-        xs[j] = dice() * (min_max[j].second - min_max[j].first)
-                  + min_max[j].first;
-      }
-      double p = squared_dist_prob(xs
-                                 , dist2
-                                 , probs
-                                 , coords);
-      if (dice() < p) {
-        sample_not_found = false;
-        samples.push_back(xs);
-      }
+    for (unsigned int j=0; j < ncol; ++j) {
+      xs[j] = dice()
+            * (min_max_coords[j].second - min_max_coords[j].first)
+            + min_max_coords[j].first;
+    }
+    // get probability
+    double p = prob_estimate(xs
+                           , dist2
+                           , probs
+                           , coords);
+    // store sample
+    samples.emplace(samples.begin(), p, xs);
+  }
+  // prob-descending ordering
+  samples.sort([](Sample a, Sample b) -> bool {
+    return a.first > b.first;
+  });
+  return samples;
+}
+
+
+
+
+StateSampler::StateSampler(const std::vector<unsigned int>& states
+                         , const std::vector<unsigned int>& pops
+                         , const std::vector<std::vector<float>>& ref_coords
+                         , float radius)
+  : _states(states)
+  , _pops(pops)
+  , _ref_coords(ref_coords)
+  , _radius(radius) {
+  // split probs / coords into states
+  std::unordered_set<unsigned int> state_names(states.begin()
+                                             , states.end());
+  std::unordered_map<unsigned int
+                   , std::vector<unsigned int>> pops_splitted;
+  for (unsigned int s: state_names) {
+    pops_splitted[s] = {};
+    _ref_coords_splitted[s] = {};
+  }
+  for (unsigned int i=0; i < pops.size(); ++i){
+    pops_splitted[states[i]].push_back(pops[i]);
+    _ref_coords_splitted[states[i]].push_back(ref_coords[i]);
+  }
+  // - normalize pops -> probs;
+  // - store minima/maxima of ref.-coords. for sampling
+  // - initialize sampling pool
+  for (unsigned int s: state_names) {
+    _probs[s] = sum1_normalized(pops_splitted[s]);
+    _min_max[s] = col_min_max(_ref_coords_splitted[s]);
+    _sampling_pool[s] = _get_new_samples(s, pool_size_total);
+    _sampling_pool_prob_sum[s] = sum_probs(_sampling_pool[s]);
+  }
+}
+
+std::list<Sample>
+StateSampler::_get_new_samples(unsigned int state
+                             , unsigned int sample_size) {
+  return sample_n(sample_size
+                , _probs[state]
+                , _min_max[state]
+                , _ref_coords_splitted[state]
+                , _radius);
+}
+
+Sample
+StateSampler::operator()(unsigned int state) {
+  // initialize random number generator
+  auto dice = std::bind(std::uniform_real_distribution<double>(0.0, 1.0)
+                      , std::mt19937(std::random_device()()));
+  // refill sampling pool if drained to minimum
+  if (_sampling_pool[state].size() < pool_size_min) {
+    _sampling_pool[state].merge(_get_new_samples(state
+                                               , pool_size_min)
+                              , [](Sample a, Sample b) {
+                                  return a.first > b.first;
+                                });
+    _sampling_pool_prob_sum[state] = sum_probs(_sampling_pool[state]);
+  }
+  // sample from the pool (without replacement)
+  double rnd = dice() * _sampling_pool_prob_sum[state];
+  double running_probsum = 0;
+  Sample sample;
+  bool got_no_result = true;
+  for (auto it=_sampling_pool[state].begin()
+     ; it != _sampling_pool[state].end()
+     ; ++it) {
+    running_probsum += it->first;
+    if (rnd < running_probsum) {
+      sample = (*it);
+      _sampling_pool[state].erase(it);
+      got_no_result = false;
+      break;
     }
   }
-  return samples;
+  if (got_no_result) {
+    // this may happen, e.g. from numeric inaccuracies...
+    sample = (*_sampling_pool[state].rbegin());
+    _sampling_pool[state].pop_back();
+  }
+  _sampling_pool_prob_sum[state] -= sample.first;
+  return sample;
 }
 
