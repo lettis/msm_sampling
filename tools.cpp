@@ -6,37 +6,19 @@
 
 #include "tools.hpp"
 
-namespace {
-
-std::vector<unsigned int>
-_read_col(std::string fname) {
-  std::vector<unsigned int> col;
-  std::ifstream ifs(fname);
-  if (ifs.fail()) {
-    std::cerr << "error: cannot open file '" << fname << "'" << std::endl;
-    exit(EXIT_FAILURE);
-  } else {
-    while (ifs.good()) {
-      unsigned int buf;
-      ifs >> buf;
-      if ( ! ifs.fail()) {
-        col.push_back(buf);
-      }
-    }
-  }
-  return col;
-}
-
-} // end local namespace
-
 std::vector<unsigned int>
 read_states(std::string fname) {
-  return _read_col(fname);
+  return _read_col<unsigned int>(fname);
 }
 
 std::vector<unsigned int>
 read_pops(std::string fname) {
-  return _read_col(fname);
+  return _read_col<unsigned int>(fname);
+}
+
+std::vector<float>
+read_fe(std::string fname) {
+  return _read_col<float>(fname);
 }
 
 

@@ -5,54 +5,48 @@
 #include <unordered_map>
 #include <utility>
 
-typedef std::pair<double, std::vector<float>> Sample;
+typedef std::pair<float, std::vector<float>> Sample;
 
-double
-sum_probs(const std::list<Sample>& samples);
+float
+sum_fe(const std::list<Sample>& samples);
 
-std::list<Sample>
-sample_n(unsigned int n
-       , const std::vector<double>& probs
-       , const std::vector<std::pair<float,float>>& min_max_coords
-       , const std::vector<std::vector<float>>& coords
-       , float radius);
 
-double
-prob_estimate(const std::vector<float>& xs
-         , float dist2
-         , const std::vector<double>& probs
-         , const std::vector<std::vector<float>>& coords);
+float
+fe_estimate(const std::vector<float>& xs
+          , float dist2
+          , const std::vector<float>& fe
+          , const std::vector<std::vector<float>>& coords);
 
 
 class StateSampler {
  public:
   StateSampler(const std::vector<unsigned int>& states
-             , const std::vector<unsigned int>& pops
+             , const std::vector<float>& fe
              , const std::vector<std::vector<float>>& ref_coords
              , float radius);
   Sample operator()(unsigned int state);
 
-  static constexpr unsigned int pool_size_total = std::pow(2,11);
-  static constexpr unsigned int pool_size_min = std::pow(2,10);
-
  private:
+  // inits
   const std::vector<unsigned int>& _states;
-  const std::vector<unsigned int>& _pops;
+  const std::vector<float>& _fe;
   const std::vector<std::vector<float>>& _ref_coords;
   float _radius;
-
-  std::unordered_map<unsigned int, std::vector<double>>
-    _probs;
+  float _radius_squared;
+  // bookkeeping
+  unsigned int _n_frames_sampled;
+  unsigned int _prev_state;
+  Sample _prev_sample;
+  // random number generator
+  std::function<float()> _dice;
+  // splitted reference values
+  std::unordered_map<unsigned int, std::vector<float>>
+    _fe_splitted;
   std::unordered_map<unsigned int, std::vector<std::pair<float,float>>>
     _min_max;
-  std::unordered_map<unsigned int, std::list<Sample>>
-    _sampling_pool;
-  std::unordered_map<unsigned int, double>
-    _sampling_pool_prob_sum;
   std::unordered_map<unsigned int, std::vector<std::vector<float>>>
     _ref_coords_splitted;
-
-  std::list<Sample> _get_new_samples(unsigned int state
-                                   , unsigned int sample_size);
+  // dimensionality
+  unsigned int _n_dim;
 };
 

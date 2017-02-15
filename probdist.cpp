@@ -14,8 +14,8 @@
 #include "tools.hpp"
 
 
-double
-sum_probs(const std::list<Sample>& samples) {
+float
+sum_fe(const std::list<Sample>& samples) {
   double sum = 0.0;
   for (Sample s: samples) {
     sum += s.first;
@@ -23,23 +23,25 @@ sum_probs(const std::list<Sample>& samples) {
   return sum;
 }
 
-double
-prob_estimate(const std::vector<float>& xs
-            , float dist2
-            , const std::vector<double>& probs
-            , const std::vector<std::vector<float>>& coords) {
+
+float
+fe_estimate(const std::vector<float>& xs
+          , float dist2
+          , const std::vector<float>& fe
+          , const std::vector<std::vector<float>>& coords) {
   unsigned int nrow = coords.size();
   unsigned int ncol = xs.size();
   float d, d2;
   unsigned int i,j;
-  double p=0;
+  double est_fe = 0;
+  unsigned int n_neighbors = 0;
 
   #pragma omp parallel for\
     default(none)\
     private(i,j,d,d2)\
     firstprivate(dist2,ncol,nrow)\
-    shared(probs,xs,coords)\
-    reduction(+:p)
+    shared(fe,xs,coords,n_neighbors)\
+    reduction(+:est_fe)
   for (i=0; i < nrow; ++i) {
     d2 = 0;
     for (j=0; j < ncol; ++j) {
@@ -47,130 +49,103 @@ prob_estimate(const std::vector<float>& xs
       d2 += d*d;
     }
     if (d2 < dist2) {
-      p += probs[i];
+      #pragma omp atomic
+      est_fe += fe[i];
+      #pragma omp atomic
+      ++n_neighbors;
     }
   }
-  return p;
-}
-
-std::list<Sample>
-sample_n(unsigned int n
-       , const std::vector<double>& probs
-       , const std::vector<std::pair<float,float>>& min_max_coords
-       , const std::vector<std::vector<float>>& coords
-       , float radius) {
-  // initialize random number generator
-  auto dice = std::bind(std::uniform_real_distribution<double>(0.0, 1.0)
-                      , std::mt19937(std::random_device()()));
-  // prepare sampling
-  std::list<Sample> samples;
-  float dist2 = radius*radius;
-  unsigned int ncol = min_max_coords.size();
-  // sampling
-  for (unsigned int i=0; i < n; ++i) {
-    // get coordinates
-    std::vector<float> xs(ncol);
-    for (unsigned int j=0; j < ncol; ++j) {
-      xs[j] = dice()
-            * (min_max_coords[j].second - min_max_coords[j].first)
-            + min_max_coords[j].first;
-    }
-    // get probability
-    double p = prob_estimate(xs
-                           , dist2
-                           , probs
-                           , coords);
-    // store sample
-    samples.emplace(samples.begin(), p, xs);
+  // if apart from others, use max. free energy
+  if (n_neighbors == 0) {
+    est_fe = (*std::max_element(fe.begin()
+                              , fe.end()));
+  } else {
+    est_fe = (est_fe / n_neighbors);
   }
-  // prob-descending ordering
-  samples.sort([](Sample a, Sample b) -> bool {
-    return a.first > b.first;
-  });
-  return samples;
+  return est_fe;
 }
-
-
 
 
 StateSampler::StateSampler(const std::vector<unsigned int>& states
-                         , const std::vector<unsigned int>& pops
+                         , const std::vector<float>& fe
                          , const std::vector<std::vector<float>>& ref_coords
                          , float radius)
   : _states(states)
-  , _pops(pops)
+  , _fe(fe)
   , _ref_coords(ref_coords)
-  , _radius(radius) {
+  , _radius(radius)
+  , _radius_squared(radius*radius)
+  , _n_frames_sampled(0) {
+  // initialize random number generator
+  _dice = std::bind(std::uniform_real_distribution<double>(0.0, 1.0)
+                  , std::mt19937(std::random_device()()));
   // split probs / coords into states
   std::unordered_set<unsigned int> state_names(states.begin()
                                              , states.end());
-  std::unordered_map<unsigned int
-                   , std::vector<unsigned int>> pops_splitted;
+  // init splitted fe/coords and store
+  // minima/maxima of ref.-coords. for sampling
   for (unsigned int s: state_names) {
-    pops_splitted[s] = {};
+    _fe_splitted[s] = {};
     _ref_coords_splitted[s] = {};
+    _min_max[s] = col_min_max(_ref_coords_splitted[s]);
   }
-  for (unsigned int i=0; i < pops.size(); ++i){
-    pops_splitted[states[i]].push_back(pops[i]);
+  for (unsigned int i=0; i < fe.size(); ++i){
+    _fe_splitted[states[i]].push_back(fe[i]);
     _ref_coords_splitted[states[i]].push_back(ref_coords[i]);
   }
-  // - normalize pops -> probs;
-  // - store minima/maxima of ref.-coords. for sampling
-  // - initialize sampling pool
-  for (unsigned int s: state_names) {
-    _probs[s] = sum1_normalized(pops_splitted[s]);
-    _min_max[s] = col_min_max(_ref_coords_splitted[s]);
-    _sampling_pool[s] = _get_new_samples(s, pool_size_total);
-    _sampling_pool_prob_sum[s] = sum_probs(_sampling_pool[s]);
-  }
+  _n_dim = ref_coords[0].size();
 }
 
-std::list<Sample>
-StateSampler::_get_new_samples(unsigned int state
-                             , unsigned int sample_size) {
-  return sample_n(sample_size
-                , _probs[state]
-                , _min_max[state]
-                , _ref_coords_splitted[state]
-                , _radius);
-}
+
+
+//TODO: idea: use simulation temp + ref. temp to scale according to temperature
+//TODO: step-scaling per dimension to control autocorrelation
+
+
+//TODO: debug & test
 
 Sample
 StateSampler::operator()(unsigned int state) {
-  // initialize random number generator
-  auto dice = std::bind(std::uniform_real_distribution<double>(0.0, 1.0)
-                      , std::mt19937(std::random_device()()));
-  // refill sampling pool if drained to minimum
-  if (_sampling_pool[state].size() < pool_size_min) {
-    _sampling_pool[state].merge(_get_new_samples(state
-                                               , pool_size_min)
-                              , [](Sample a, Sample b) {
-                                  return a.first > b.first;
-                                });
-    _sampling_pool_prob_sum[state] = sum_probs(_sampling_pool[state]);
-  }
-  // sample from the pool (without replacement)
-  double rnd = dice() * _sampling_pool_prob_sum[state];
-  double running_probsum = 0;
-  Sample sample;
-  bool got_no_result = true;
-  for (auto it=_sampling_pool[state].begin()
-     ; it != _sampling_pool[state].end()
-     ; ++it) {
-    running_probsum += it->first;
-    if (rnd < running_probsum) {
-      sample = (*it);
-      _sampling_pool[state].erase(it);
-      got_no_result = false;
-      break;
+  std::vector<float> new_sample_coords(_n_dim);
+  float new_sample_fe;
+  auto new_fe = [&]() -> float {
+    return fe_estimate(new_sample_coords
+                     , _radius_squared
+                     , _fe_splitted[state]
+                     , _ref_coords_splitted[state]);
+    
+  };
+  if (state == _prev_state) {
+    float step_width = _radius;
+    bool no_state_found = true;
+    while (no_state_found) {
+      for (unsigned int=0; i < _n_dim; ++i) {
+        // new = old + uniform_sample([-step,step])
+        new_sample_coords[i] = _prev_state.second[i]
+                             + _dice()*2*step_width
+                             - step_width;
+      }
+      new_sample_fe = new_fe();
+      if (new_sample_fe < _prev_sample.first
+       || _dice() < std::min(1, std::exp(_prev_sample.first - new_sample_fe)) {
+        no_state_found = false;
+      }
     }
+  } else {
+    // accept new sample regardless of its energy
+    for (unsigned int i=0; i < _n_dim; ++i) {
+      new_sample_coords[i] = _dice()
+                           * (_min_max[state][i].second
+                            - _min_max[state][i].first);
+    }
+    new_sample_fe = new_fe();
   }
-  if (got_no_result) {
-    // this may happen, e.g. from numeric inaccuracies...
-    sample = (*_sampling_pool[state].rbegin());
-    _sampling_pool[state].pop_back();
-  }
-  _sampling_pool_prob_sum[state] -= sample.first;
-  return sample;
+  // bookkeeping for Metropolis algorithm
+  ++_n_frames_sampled;
+  Sample new_sample = {new_sample_fe
+                     , new_sample_coords};
+  _prev_sample = new_sample;
+  _prev_state = state;
+  return new_sample;
 }
 

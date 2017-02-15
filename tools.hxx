@@ -1,5 +1,32 @@
 
+#include <fstream>
+
 #include "tools.hpp"
+
+namespace {
+
+template<typename NUM>
+std::vector<NUM>
+_read_col(std::string fname) {
+  std::vector<NUM> col;
+  std::ifstream ifs(fname);
+  if (ifs.fail()) {
+    std::cerr << "error: cannot open file '" << fname << "'" << std::endl;
+    exit(EXIT_FAILURE);
+  } else {
+    while (ifs.good()) {
+      NUM buf;
+      ifs >> buf;
+      if ( ! ifs.fail()) {
+        col.push_back(buf);
+      }
+    }
+  }
+  return col;
+}
+
+} // end local namespace
+
 
 template <typename NUM>
 std::vector<double>

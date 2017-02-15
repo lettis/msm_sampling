@@ -40,12 +40,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "probdist.hpp"
 
 void
-compute_prob_estimates(const std::vector<unsigned int>& pops
-                     , const std::vector<std::vector<float>>& ref_coords
-                     , float radius
-                     , std::string fname_out) {
+compute_fe_estimates(const std::vector<float>& ref_free_energies
+                   , const std::vector<std::vector<float>>& ref_coords
+                   , float radius
+                   , std::string fname_out) {
   unsigned int nrow = ref_coords.size();
-  std::vector<double> ref_probs = sum1_normalized(pops);
   float dist2 = radius*radius;
   Tools::IO::set_out(fname_out);
 
@@ -59,11 +58,11 @@ compute_prob_estimates(const std::vector<unsigned int>& pops
                        << i << " / " << nrow
                        << std::endl;
     }
-    double prob = prob_estimate(ref_coords[i]
-                              , dist2
-                              , ref_probs
-                              , ref_coords);
-    Tools::IO::out() << prob << std::endl;
+    float fe = fe_estimate(ref_coords[i]
+                         , dist2
+                         , ref_free_energies
+                         , ref_coords);
+    Tools::IO::out() << fe << std::endl;
   }
 }
 
@@ -83,8 +82,8 @@ int main(int argc, char* argv[]) {
      "input:            simulated state trajectory.")
     ("states,s", b_po::value<std::string>(),
      "input:            reference state trajectory.")
-    ("pops,p", b_po::value<std::string>()->required(),
-     "input (required): reference per-frame populations.")
+    ("free-energies,f", b_po::value<std::string>()->required(),
+     "input (required): reference per-frame free energies.")
     ("coords,c", b_po::value<std::string>()->required(),
      "input (required): reference coordinates.")
     ("output,o", b_po::value<std::string>()->default_value(""),
@@ -148,14 +147,14 @@ int main(int argc, char* argv[]) {
   bool compute_estimates = args["estimates"].as<bool>();
   if (compute_estimates) {
     // compute probability estimates for reference coordinates
-    compute_prob_estimates(read_pops(args["pops"].as<std::string>())
-                         , ref_coords
-                         , radius
-                         , fname_out);
+    compute_fe_estimates(read_fe(args["free-energies"].as<std::string>())
+                       , ref_coords
+                       , radius
+                       , fname_out);
   } else {
     // state sampler function: state id -> sample
     StateSampler state_sampler(read_states(args["states"].as<std::string>())
-                             , read_pops(args["pops"].as<std::string>())
+                             , read_fe(args["free-energies"].as<std::string>())
                              , ref_coords
                              , radius);
     // prepare output file (or stdout)

@@ -4,15 +4,14 @@
 #include <vector>
 
 
-
-//TODO put into tools_io
-
 std::vector<unsigned int>
 read_states(std::string fname);
 
 std::vector<unsigned int>
 read_pops(std::string fname);
 
+std::vector<float>
+read_fe(std::string fname);
 
 //// misc
 
