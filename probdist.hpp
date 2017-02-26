@@ -7,9 +7,6 @@
 
 typedef std::pair<float, std::vector<float>> Sample;
 
-float
-sum_fe(const std::list<Sample>& samples);
-
 
 float
 fe_estimate(const std::vector<float>& xs
@@ -40,8 +37,8 @@ class StateSampler {
   // random number generator
   std::function<float()> _dice;
   // splitted reference values
-  std::unordered_map<unsigned int, std::vector<float>>
-    _fe_splitted;
+  std::unordered_map<unsigned int, std::vector<float>> _fe_splitted;
+  std::unordered_map<unsigned int, float> _max_fe_splitted;
   std::unordered_map<unsigned int, std::vector<std::pair<float,float>>>
     _min_max;
   std::unordered_map<unsigned int, std::vector<std::vector<float>>>

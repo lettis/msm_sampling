@@ -15,16 +15,6 @@
 
 
 float
-sum_fe(const std::list<Sample>& samples) {
-  double sum = 0.0;
-  for (Sample s: samples) {
-    sum += s.first;
-  }
-  return sum;
-}
-
-
-float
 fe_estimate(const std::vector<float>& xs
           , float dist2
           , const std::vector<float>& fe
@@ -35,7 +25,6 @@ fe_estimate(const std::vector<float>& xs
   unsigned int i,j;
   double est_fe = 0;
   unsigned int n_neighbors = 0;
-
   #pragma omp parallel for\
     default(none)\
     private(i,j,d,d2)\
@@ -83,26 +72,27 @@ StateSampler::StateSampler(const std::vector<unsigned int>& states
   std::unordered_set<unsigned int> state_names(states.begin()
                                              , states.end());
   // init splitted fe/coords and store
-  // minima/maxima of ref.-coords. for sampling
   for (unsigned int s: state_names) {
     _fe_splitted[s] = {};
     _ref_coords_splitted[s] = {};
-    _min_max[s] = col_min_max(_ref_coords_splitted[s]);
   }
   for (unsigned int i=0; i < fe.size(); ++i){
     _fe_splitted[states[i]].push_back(fe[i]);
     _ref_coords_splitted[states[i]].push_back(ref_coords[i]);
   }
+  // minima/maxima of ref.-coords. for sampling
+  for (unsigned int s: state_names) {
+    _min_max[s] = col_min_max(_ref_coords_splitted[s]);
+    _max_fe_splitted[s] = (*std::max_element(_fe_splitted[s].begin()
+                                           , _fe_splitted[s].end()));
+  }
   _n_dim = ref_coords[0].size();
 }
-
 
 
 //TODO: idea: use simulation temp + ref. temp to scale according to temperature
 //TODO: step-scaling per dimension to control autocorrelation
 
-
-//TODO: debug & test
 
 Sample
 StateSampler::operator()(unsigned int state) {
@@ -113,32 +103,47 @@ StateSampler::operator()(unsigned int state) {
                      , _radius_squared
                      , _fe_splitted[state]
                      , _ref_coords_splitted[state]);
-    
   };
   if (state == _prev_state) {
     float step_width = _radius;
-    bool no_state_found = true;
-    while (no_state_found) {
-      for (unsigned int=0; i < _n_dim; ++i) {
-        // new = old + uniform_sample([-step,step])
-        new_sample_coords[i] = _prev_state.second[i]
+    bool no_sample_found = true;
+    while (no_sample_found) {
+      for (unsigned int i=0; i < _n_dim; ++i) {
+        // update coords:
+        //   new = old + uniform_sample([-step,step])
+        new_sample_coords[i] = _prev_sample.second[i]
                              + _dice()*2*step_width
                              - step_width;
       }
+      // Metropolis sampling:
+      //   accept coords if smaller energy than previous
+      //   or if Boltzmann weight of energy-difference is higher
+      //   than random value.
       new_sample_fe = new_fe();
-      if (new_sample_fe < _prev_sample.first
-       || _dice() < std::min(1, std::exp(_prev_sample.first - new_sample_fe)) {
-        no_state_found = false;
+      if (new_sample_fe < _max_fe_splitted[state]) {
+        if (new_sample_fe < _prev_sample.first
+         || _dice() < std::min(1.0f
+                             , std::exp(_prev_sample.first - new_sample_fe))) {
+          no_sample_found = false;
+        }
       }
     }
   } else {
-    // accept new sample regardless of its energy
-    for (unsigned int i=0; i < _n_dim; ++i) {
-      new_sample_coords[i] = _dice()
-                           * (_min_max[state][i].second
-                            - _min_max[state][i].first);
+    bool no_sample_found = true;
+    while (no_sample_found) {
+      // sample new coordinates 'out of the blue'
+      for (unsigned int i=0; i < _n_dim; ++i) {
+        new_sample_coords[i] = _min_max[state][i].first
+                             + _dice()
+                             * (_min_max[state][i].second
+                              - _min_max[state][i].first);
+      }
+      // always accept new sample as long as energy < max(state_energy)
+      new_sample_fe = new_fe();
+      if (new_sample_fe < _max_fe_splitted[state]) {
+        no_sample_found = false;
+      }
     }
-    new_sample_fe = new_fe();
   }
   // bookkeeping for Metropolis algorithm
   ++_n_frames_sampled;

@@ -91,9 +91,6 @@ int main(int argc, char* argv[]) {
      " default: stdout.")
     ("radius,r", b_po::value<float>()->default_value(0.1),
      "                  radius for probability integration. default: 0.1")
-    ("estimates,e", b_po::bool_switch()->default_value(false),
-     "flag:             compute estimates of local probabilities for reference"
-     " coordinates. default: not set.")
     ("nthreads,n", b_po::value<int>()->default_value(0),
      "                  number of OpenMP threads. default: 0; i.e. use"
      " OMP_NUM_THREADS env-variable.")
@@ -130,7 +127,7 @@ int main(int argc, char* argv[]) {
   if (n_threads > 0) {
     omp_set_num_threads(n_threads);
   }
-  // input
+  // input (coordinates)
   std::string fname_out = args["output"].as<std::string>();
   float radius = args["radius"].as<float>();
   std::vector<std::vector<float>> ref_coords;
@@ -144,53 +141,47 @@ int main(int argc, char* argv[]) {
       }
     }
   }
-  bool compute_estimates = args["estimates"].as<bool>();
-  if (compute_estimates) {
-    // compute probability estimates for reference coordinates
-    compute_fe_estimates(read_fe(args["free-energies"].as<std::string>())
-                       , ref_coords
-                       , radius
-                       , fname_out);
+  // input (MSM trajectory to be sampled)
+  std::vector<unsigned int> traj
+    = read_states(args["traj"].as<std::string>());
+  // prepare output file (or stdout)
+  bool use_stdout;
+  CoordsFile::FilePointer fh_out;
+  if (fname_out == "") {
+    use_stdout = true;
   } else {
-    // state sampler function: state id -> sample
-    StateSampler state_sampler(read_states(args["states"].as<std::string>())
-                             , read_fe(args["free-energies"].as<std::string>())
-                             , ref_coords
-                             , radius);
-    // prepare output file (or stdout)
-    bool use_stdout;
-    CoordsFile::FilePointer fh_out;
-    if (fname_out == "") {
-      use_stdout = true;
-    } else {
-      use_stdout = false;
-      fh_out = CoordsFile::open(fname_out, "w");
+    use_stdout = false;
+    fh_out = CoordsFile::open(fname_out, "w");
+  }
+  // state sampler function: state id -> sample
+  StateSampler state_sampler(read_states(args["states"].as<std::string>())
+                           , read_fe(args["free-energies"].as<std::string>())
+                           , ref_coords
+                           , radius);
+  // helper function: sample -> stdout
+  auto print_stdout = [&] (std::vector<float> xs) {
+    for (float x: xs) {
+      std::cout << " " << x;
     }
-    // the MSM trajectory to be sampled
-    std::vector<unsigned int> traj
-      = read_states(args["traj"].as<std::string>());
-    // func: sample -> stdout
-    auto print_stdout = [&] (std::vector<float> xs) {
-      for (float x: xs) {
-        std::cout << " " << x;
-      }
-      std::cout << std::endl;
-    };
-    unsigned int i_state = 0;
-    // sample the trajectory
-    for (unsigned int state: traj) {
-
-      ++i_state;
-      if (i_state % 100 == 0) {
-        std::cerr << i_state << " / " << traj.size() << std::endl;
-      }
-
-      Sample sample = state_sampler(state);
-      if (use_stdout) {
-        print_stdout(sample.second);
-      } else {
-        fh_out->write(sample.second);
-      }
+    std::cout << std::endl;
+  };
+  // sample the trajectory
+  unsigned int i_state = 0;
+  for (unsigned int state: traj) {
+    //TODO only if verbose
+    ++i_state;
+    if (i_state % 100 == 0) {
+      std::cerr << i_state << " / " << traj.size() << std::endl;
+    }
+    ////
+    Sample sample = state_sampler(state);
+    // TODO make that optional:
+    // append free energy value to coordinates
+    sample.second.push_back(sample.first);
+    if (use_stdout) {
+      print_stdout(sample.second);
+    } else {
+      fh_out->write(sample.second);
     }
   }
   return EXIT_SUCCESS;
