@@ -91,6 +91,12 @@ StateSampler::StateSampler(const std::vector<unsigned int>& states
 
 
 //TODO: idea: use simulation temp + ref. temp to scale according to temperature
+//TODO: idea: true coordinates:
+//              1. generate internal coordinates
+//              2. apply projection
+//              3. Metropolis
+//  1. and 2. as plugin classes to StateSampler
+
 //TODO: step-scaling per dimension to control autocorrelation
 
 
