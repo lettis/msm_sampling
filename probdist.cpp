@@ -111,6 +111,7 @@ StateSampler::operator()(unsigned int state) {
                      , _ref_coords_splitted[state]);
   };
   if (state == _prev_state) {
+    //TODO step width scaling per dimension as input parameter
     float step_width = _radius;
     bool no_sample_found = true;
     while (no_sample_found) {

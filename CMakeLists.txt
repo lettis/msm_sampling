@@ -103,7 +103,7 @@ if(${USE_CUDA})
   # debugging
   #set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} "-g -G")
 
-  #set (SRCS ${SRCS} density_clustering_cuda.cu)
+  set (SRCS ${SRCS} probdist_cuda.cu)
 
   set (LIBS ${LIBS} ${CUDA_LIBRARIES})
   include_directories (${CUDA_INCLUDE_DIRS})
@@ -114,7 +114,7 @@ set (PROGNAME msm_sampling)
 
 
 if (${USE_CUDA})
-  set (PROGNAME ${PROGNAME}.cuda)
+  #set (PROGNAME ${PROGNAME}.cuda)
   cuda_add_executable(${PROGNAME} ${SRCS})
 else()
   add_executable(${PROGNAME} ${SRCS})
