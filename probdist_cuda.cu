@@ -1,5 +1,10 @@
 
+#include "probdist_cuda.hpp"
+
+#include <limits>
+
 namespace CUDA {
+
   void
   check_error(std::string msg) {
     cudaError_t err = cudaGetLastError();
@@ -41,10 +46,13 @@ namespace CUDA {
     gpu.states = states;
     cudaSetDevice(i_gpu);
     check_error("setting CUDA device");
+    unsigned int max_split_size = 0;
     for (unsigned int state: states) {
       unsigned int split_size = fe[state].size();
+      max_split_size = std::max(split_size
+                              , max_split_size);
       gpu.split_sizes[state] = split_size;
-      //// reserve memory
+      //// reserve memory for references
       cudaMalloc((void**) &gpu.fe[state]
                , sizeof(float) * split_size);
       cudaMalloc((void**) &gpu.coords[state]
@@ -69,6 +77,13 @@ namespace CUDA {
                , cudaMemcpyHostToDevice);
       check_error("copying of state-splitted coordinates");
     }
+    //// allocate memory for partial results
+    unsigned int min_result_size = max_split_size/32 + 1;
+    cudaMalloc((void**) gpu.est_fe
+             , sizeof(float) * min_result_size);
+    cudaMalloc((void**) gpu.est_neighbors
+             , sizeof(unsigned int) * min_result_size);
+    // ... and return GPU-settings
     return gpu;
   }
 
@@ -82,115 +97,103 @@ namespace CUDA {
       cudaFree(gpu.coords[state]);
       check_error("freeing memory for coordinates");
     }
+    cudaFree(gpu.est_fe);
+    check_error("freeing memory for partial fe results");
+    cudaFree(gpu.est_neighbors);
+    check_error("freeing memory for partial neighbor count");
   }
 
 
-  
 
-
-  //TODO reuse for FE estimate
-/*
-  Pops
-  calculate_populations_per_gpu(const float* coords
-                              , std::size_t n_rows
-                              , std::size_t n_cols
-                              , std::vector<float> radii
-                              , std::size_t i_from
-                              , std::size_t i_to
-                              , int i_gpu) {
-    using Clustering::Tools::min_multiplicator;
-    unsigned int n_radii = radii.size();
-    std::vector<float> rad2(n_radii);
-    for (std::size_t i=0; i < n_radii; ++i) {
-      rad2[i] = radii[i]*radii[i];
+  __global__ void
+  fe_estimate_krnl(float* xs
+                 , float* ref_coords
+                 , float* ref_fe
+                 , float rad2
+                 , unsigned int* est_neighbors
+                 , float* est_fe
+                 , unsigned int n_rows
+                 , unsigned int n_cols
+                 , unsigned int i_from
+                 , unsigned int i_to) {
+    //TODO: i_from / i_to ?
+    // CUDA-specific indices for block, thread and global
+    unsigned int bsize = blockDim.x;
+    unsigned int bid = blockIdx.x;
+    unsigned int tid = threadIdx.x;
+    unsigned int gid = bid * bsize + tid + i_from;
+    // locally shared memory for fast access
+    //  coords has size [(bsize+1) x n_cols] for
+    //  bsize rows of ref-coords + 1 row of xs.
+    extern __shared__ float s_coords[];
+    __shared__ float s_fe[BSIZE];
+    __shared__ unsigned int s_neighbors[BSIZE];
+    if (gid < n_rows) {
+      // coalasced read of reference coords/fe
+      for (unsigned int j=0; j < n_cols; ++j) {
+        s_coords[(tid+1)*n_cols + j] = ref_coords[(tid+bsize*bid)*n_cols+j];
+      }
+      s_fe[tid] = ref_fe[gid];
+      s_neighbors[tid] = 1;
+      if (tid == 0) {
+        // read xs to local mem
+        for (unsigned int j=0; j < n_cols; ++j) {
+          s_coords[j] = xs[j];
+        }
+      }
+    } else {
+      s_fe[tid] = 0.0f;
+      s_neighbors[tid] = 0;
     }
-    // GPU setup
-    cudaSetDevice(i_gpu);
-    float* d_coords;
-    float* d_rad2;
-    unsigned int* d_pops;
-    cudaMalloc((void**) &d_coords
-             , sizeof(float) * n_rows * n_cols);
-    cudaMalloc((void**) &d_pops
-             , sizeof(unsigned int) * n_rows * n_radii);
-    cudaMalloc((void**) &d_rad2
-             , sizeof(float) * n_radii);
-    check_error("pop-calc device mallocs");
-    cudaMemset(d_pops
-             , 0
-             , sizeof(unsigned int) * n_rows * n_radii);
-    check_error("pop-calc memset");
-    cudaMemcpy(d_coords
-             , coords
-             , sizeof(float) * n_rows * n_cols
-             , cudaMemcpyHostToDevice);
-    cudaMemcpy(d_rad2
-             , rad2.data()
-             , sizeof(float) * n_radii
-             , cudaMemcpyHostToDevice);
-    check_error("pop-calc mem copies");
-    int max_shared_mem;
-    cudaDeviceGetAttribute(&max_shared_mem
-                         , cudaDevAttrMaxSharedMemoryPerBlock
-                         , i_gpu);
-    check_error("getting max shared mem size");
-    unsigned int block_size = BSIZE_POPS;
-    unsigned int shared_mem = 2 * block_size * n_cols * sizeof(float);
-    if (shared_mem > max_shared_mem) {
-      std::cerr << "error: max. shared mem per block too small on this GPU.\n"
-                << "       either reduce BSIZE_POPS or get a better GPU."
-                << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    unsigned int block_rng = min_multiplicator(i_to-i_from, block_size);
-    Clustering::logger(std::cout) << "# blocks needed: "
-                                  << block_rng << std::endl;
-    for (unsigned int i=0; i*block_size < n_rows; ++i) {
-      Clustering::Density::CUDA::Kernel::population_count
-      <<< block_rng
-        , block_size
-        , shared_mem >>> (i*block_size
-                        , d_coords
-                        , n_rows
-                        , n_cols
-                        , d_rad2
-                        , n_radii
-                        , d_pops
-                        , i_from
-                        , i_to);
-    }
-    cudaDeviceSynchronize();
-    check_error("after kernel loop");
-    // get partial results from GPU
-    std::vector<unsigned int> partial_pops(n_rows*n_radii);
-    cudaMemcpy(partial_pops.data()
-             , d_pops
-             , sizeof(unsigned int) * n_rows * n_radii
-             , cudaMemcpyDeviceToHost);
-    // sort into resulting pops
-    Pops pops;
-    for (unsigned int r=0; r < n_radii; ++r) {
-      pops[radii[r]].resize(n_rows, 0);
-      for (unsigned int i=i_from; i < i_to; ++i) {
-        pops[radii[r]][i] = partial_pops[r*n_rows+i];
+    __syncthreads();
+    // filter out all frames with distance (d2)
+    // larger than cutoff (rad2)
+    if (gid < n_rows) {
+      float d2 = 0.0f;
+      for (unsigned int j=0; j < n_cols; ++j) {
+        float d = (s_coords[(tid+1)*n_cols + j] - xs[j]);
+        d2 += d*d;
+      }
+      if (rad2 < d2) {
+        s_fe[tid] = 0.0f;
+        s_neighbors[tid] = 0;
       }
     }
-    cudaFree(d_coords);
-    cudaFree(d_rad2);
-    cudaFree(d_pops);
-    return pops;
+    _syncthreads();
+    // local reduction of intermediate results
+    // with unrolled loop in single warp
+    for (unsigned int s=bsize/2; s > 32; s>>=1) {
+      if (tid < s) {
+        s_fe[tid] += s_fe[tid+s];
+        s_neighbors[tid] += s_neighbors[tid+s];
+      }
+      __syncthreads();
+    }
+    // 32 is common warp size for all CUDA devices
+    if (tid < 32) {
+      // threads inside single warp are implicitly synced
+      // => no __syncthreads() call necessary
+      s_fe[tid] += s_fe[tid+32];
+      s_neighbors[tid] += s_neighbors[tid+32];
+      s_fe[tid] += s_fe[tid+16];
+      s_neighbors[tid] += s_neighbors[tid+16];
+      s_fe[tid] += s_fe[tid+ 8];
+      s_neighbors[tid] += s_neighbors[tid+ 8];
+      s_fe[tid] += s_fe[tid+ 4];
+      s_neighbors[tid] += s_neighbors[tid+ 4];
+      s_fe[tid] += s_fe[tid+ 2];
+      s_neighbors[tid] += s_neighbors[tid+ 2];
+      s_fe[tid] += s_fe[tid+ 1];
+      s_neighbors[tid] += s_neighbors[tid+ 1];
+    }
+    // write results to global memory
+    if (tid == 0) {
+      est_fe[bid] = s_fe[0];
+      est_neighbors[bid] = s_neighbors[0];
+    }
   }
-*/
 
 
-  std::pair<unsigned int, float>
-  fe_estimate_partial(const std::vector<float>& xs
-                    , unsigned int state
-                    , unsigned int i_from
-                    , unsigned int i_to
-                    , GPUSettings& gpu) {
-    //TODO
-  }
 
   float
   fe_estimate(const std::vector<float>& xs
@@ -212,29 +215,74 @@ namespace CUDA {
     #pragma omp parallel for default(none)\
       private(i)\
       firstprivate(n_gpus,n_rows,n_cols,gpu_range)\
-      shared(partial_pops,radii,coords)\
+      shared(partial_estimates,state,xs)\
       num_threads(n_gpus)\
       schedule(dynamic,1)
     for (i=0; i < n_gpus; ++i) {
       // use available GPUs in parallel to
       // compute partial estimates
-      partial_estimates[i] = fe_estimate_partial(xs
-                                               , state
-                                               , i*gpu_range
-                                               , i == (n_gpus-1)
-                                                   ? n_rows
-                                                   : (i+1)*gpu_range
-                                               , gpus[i]);
+//      partial_estimates[i] = fe_estimate_partial(xs
+//                                               , state
+//                                               , i*gpu_range
+//                                               , i == (n_gpus-1)
+//                                                   ? n_rows
+//                                                   : (i+1)*gpu_range
+//                                               , gpus[i]);
+
+      unsigned int block_rng = min_multiplicator(i_to-i_from, BSIZE);
+
+      //TODO: correct kernel parameters / shared_mem size
+      fe_estimate_krnl
+      <<< block_rng
+        , BSIZE
+        , shared_mem >>> (i*block_size
+                        , d_coords
+                        , n_rows
+                        , n_cols
+                        , d_rad2
+                        , n_radii
+                        , d_neighbors
+                        , i_from
+                        , i_to);
+      /////
+
+
+      cudaDeviceSynchronize();
+      check_error("after kernel loop");
+      // retrieve partial results
+      std::vector<float> est_fe(block_rng);
+      std::vector<unsigned int> est_neighbors(block_rng);
+      cudaMemcpy(gpu.est_fe
+               , est_fe.data()
+               , sizeof(float) * block_rng
+               , cudaMemcpyDeviceToHost);
+      cudaMemcpy(gpu.est_neighbors
+               , est_neighbors.data()
+               , sizeof(float) * block_rng
+               , cudaMemcpyDeviceToHost);
+      // accumulate partial results per GPU
+      for (auto fe: est_fe) {
+        partial_estimates[i].second += fe;
+      }
+      for (auto n_neighbors: est_neighbors) {
+        partial_estimates[i].first += n_neighbors;
+      }
     }
-    // combine results
+    // combine results from GPUs
     unsigned int n_neighbors = 0;
     float fe_estimate = 0.0f;
     for (auto result: partial_estimates) {
       n_neighbors += result.first;
       fe_estimate += result.second;
     }
-    return fe_estimate / ((float) n_neighbors);
+    if (n_neighbors == 0) {
+      fe_estimate = std::numeric_limits<float>::max();
+    } else {
+      fe_estimate /= ((float) n_neighbors);
+    }
+    // final free energy estimate
+    return fe_estimate;
   }
 
-}
+} // end namespace CUDA
 

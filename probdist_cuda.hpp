@@ -18,6 +18,8 @@ namespace CUDA {
     std::unordered_map<unsigned int, unsigned int> split_sizes;
     std::unordered_map<unsigned int, float*> fe;
     std::unordered_map<unsigned int, float*> coords;
+    float* est_fe;
+    unsigned int* est_neighbors;
   };
 
   void
