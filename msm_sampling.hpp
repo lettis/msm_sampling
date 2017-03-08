@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 
 typedef std::pair<float, std::vector<float>> Sample;
@@ -13,7 +14,7 @@ typedef std::pair<float, std::vector<float>> Sample;
 class MetropolisStepper {
  public:
   MetropolisStepper();
-  std::vector<float> operator()() = 0;
+  virtual std::vector<float> operator()() = 0;
  protected:
   std::function<float()> _dice;
 };
@@ -22,6 +23,7 @@ class ScaledHypercubeStepper : public MetropolisStepper {
  public:
   ScaledHypercubeStepper(float step_width
                        , std::vector<float> scaling);
+  std::vector<float> operator()();
  protected:
   float _step_width;
   std::vector<float> _scaling;
@@ -37,6 +39,7 @@ class ScaledHypersphereStepper : public MetropolisStepper {
  public:
   ScaledHypersphereStepper(float step_width
                          , std::vector<float> scaling);
+  std::vector<float> operator()();
  protected:
   float _step_width;
   std::vector<float> _scaling;
@@ -59,7 +62,7 @@ class StateSampler {
              , const std::vector<float>& fe
              , const std::vector<std::vector<float>>& ref_coords
              , float radius
-             , MetropolisStepper stepper);
+             , MetropolisStepper& stepper);
   Sample operator()(unsigned int state);
 
  private:
@@ -69,7 +72,7 @@ class StateSampler {
   const std::vector<std::vector<float>>& _ref_coords;
   float _radius;
   float _radius_squared;
-  MetropolisStepper _stepper;
+  MetropolisStepper& _stepper;
   // bookkeeping
   unsigned int _n_frames_sampled;
   unsigned int _prev_state;

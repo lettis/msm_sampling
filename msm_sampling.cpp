@@ -28,6 +28,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <random>
+#include <unordered_set>
 
 #include <omp.h>
 #include <boost/program_options.hpp>
@@ -61,7 +63,7 @@ ScaledHypercubeStepper::operator()() {
   // randomized step drawn from [-step_width, +step_width]
   // per dimension with additional scaling.
   for (unsigned int i=0; i < _scaling.size(); ++i) {
-    float w = _scaling[i]*step_width;
+    float w = _scaling[i]*_step_width;
     step[i] = _dice()*2*w - w;
   }
   return step;
@@ -80,6 +82,7 @@ ScaledHypersphereStepper::ScaledHypersphereStepper(float step_width
   , _scaling(scaling) {
 }
 
+std::vector<float>
 ScaledHypersphereStepper::operator()() {
   std::vector<float> step(_scaling.size());
   float p2 = 0.0f;
@@ -87,12 +90,12 @@ ScaledHypersphereStepper::operator()() {
   // on hypersphere (i.e. limited radius, randomly chosen)
   // with additional scaling per dimension.
   for (unsigned int i=0; i < _scaling.size(); ++i) {
-    float w = step_width;
+    float w = _step_width;
     step[i] = _dice()*2*w - w;
     p2 += step[i] * step[i];
   }
   // normalize vector, scale radius by step width and random factor
-  p2 = 1.0f/std::sqrt(p2) * step_width * _dice();
+  p2 = 1.0f/std::sqrt(p2) * _step_width * _dice();
   for (unsigned int i=0; i < _scaling.size(); ++i) {
     // additional scaling per dimension
     step[i] *= p2 * _scaling[i];
@@ -114,7 +117,7 @@ StateSampler::StateSampler(const std::vector<unsigned int>& states
                          , const std::vector<float>& fe
                          , const std::vector<std::vector<float>>& ref_coords
                          , float radius
-                         , MetropolisStepper stepper)
+                         , MetropolisStepper& stepper)
   : _states(states)
   , _fe(fe)
   , _ref_coords(ref_coords)
@@ -241,10 +244,10 @@ int main(int argc, char* argv[]) {
     ("output,o", b_po::value<std::string>()->default_value(""),
      "output:           the sampled coordinates / probability estimates."
      " default: stdout.")
-    ("append-fe" b_po::bool_switch()->default_value(false),
+    ("append-fe", b_po::bool_switch()->default_value(false),
      "                  append free energy estimate as additional"
      " column to the output coordinates")
-    ("verbose,v" b_po::bool_switch()->default_value(false),
+    ("verbose,v", b_po::bool_switch()->default_value(false),
      "                  give verbose output.")
     ("nthreads,n", b_po::value<int>()->default_value(0),
      "                  number of OpenMP threads. default: 0; i.e. use"
@@ -321,14 +324,15 @@ int main(int argc, char* argv[]) {
     use_stdout = false;
     fh_out = CoordsFile::open(fname_out, "w");
   }
+  //TODO test other stepper functions
+  auto metropolis_stepper = HypersphereStepper(radius
+                                             , n_dim);
   // state sampler function: state id -> sample
   StateSampler state_sampler(read_states(args["states"].as<std::string>())
                            , read_fe(args["free-energies"].as<std::string>())
                            , ref_coords
                            , radius
-                           //TODO test other stepper functions
-                           , HypercubeStepper(radius
-                                            , n_dim));
+                           , metropolis_stepper);
   // helper function: sample -> stdout
   auto print_stdout = [&] (std::vector<float> xs) {
     for (float x: xs) {
