@@ -22,7 +22,7 @@ namespace CUDA {
     cudaGetDeviceCount(&n_gpus);
     check_error("trying to get number of available GPUs");
     if (n_gpus == 0) {
-      std::cerr << "error: no CUDA-compatible GPUs found."
+      std::cerr << "error: no CUDA-compatible GPU(s) found."
                 << std::endl
                 << "       if you are sure to have one,"
                 << std::endl
@@ -103,8 +103,6 @@ namespace CUDA {
     check_error("freeing memory for partial neighbor count");
   }
 
-
-
   __global__ void
   fe_estimate_krnl(float* xs
                  , float* ref_coords
@@ -116,7 +114,6 @@ namespace CUDA {
                  , unsigned int n_cols
                  , unsigned int i_from
                  , unsigned int i_to) {
-    //TODO: i_from / i_to ?
     // CUDA-specific indices for block, thread and global
     unsigned int bsize = blockDim.x;
     unsigned int bid = blockIdx.x;
@@ -128,7 +125,7 @@ namespace CUDA {
     extern __shared__ float s_coords[];
     __shared__ float s_fe[BSIZE];
     __shared__ unsigned int s_neighbors[BSIZE];
-    if (gid < n_rows) {
+    if (gid < i_to) {
       // coalasced read of reference coords/fe
       for (unsigned int j=0; j < n_cols; ++j) {
         s_coords[(tid+1)*n_cols + j] = ref_coords[(tid+bsize*bid)*n_cols+j];
@@ -148,7 +145,7 @@ namespace CUDA {
     __syncthreads();
     // filter out all frames with distance (d2)
     // larger than cutoff (rad2)
-    if (gid < n_rows) {
+    if (gid < i_to) {
       float d2 = 0.0f;
       for (unsigned int j=0; j < n_cols; ++j) {
         float d = (s_coords[(tid+1)*n_cols + j] - xs[j]);
@@ -209,16 +206,19 @@ namespace CUDA {
     }
     unsigned int n_rows = gpus[0].split_sizes[state];
     unsigned int gpu_range = n_rows / n_gpus;
-    int i;
+    int i_gpu;
+    unsigned int i_from;
+    unsigned int i_to;
+    unsigned int block_range;
     // partial estimates: pair of {#neighbors, sum(FE)}
     std::vector<std::pair<unsigned int, float>> partial_estimates(n_gpus);
     #pragma omp parallel for default(none)\
-      private(i)\
+      private(i_gpu,i_from,i_to,block_range)\
       firstprivate(n_gpus,n_rows,n_cols,gpu_range)\
       shared(partial_estimates,state,xs)\
       num_threads(n_gpus)\
       schedule(dynamic,1)
-    for (i=0; i < n_gpus; ++i) {
+    for (i_gpu=0; i_gpu < n_gpus; ++i_gpu) {
       // use available GPUs in parallel to
       // compute partial estimates
 //      partial_estimates[i] = fe_estimate_partial(xs
@@ -229,7 +229,18 @@ namespace CUDA {
 //                                                   : (i+1)*gpu_range
 //                                               , gpus[i]);
 
-      unsigned int block_rng = min_multiplicator(i_to-i_from, BSIZE);
+      i_from = i_gpu * gpu_range;
+      if (i_gpu == n_gpus-1) {
+        i_to = n_rows
+      } else {
+        i_to = (i_gpu+1) * gpu_range;
+      }
+      // TODO correct shared mem size
+      block_rng = min_multiplicator(i_to-i_from, BSIZE);
+
+
+      //TODO: set CUDA device
+
 
       //TODO: correct kernel parameters / shared_mem size
       fe_estimate_krnl
@@ -248,7 +259,7 @@ namespace CUDA {
 
 
       cudaDeviceSynchronize();
-      check_error("after kernel loop");
+      check_error("after kernel call");
       // retrieve partial results
       std::vector<float> est_fe(block_rng);
       std::vector<unsigned int> est_neighbors(block_rng);
