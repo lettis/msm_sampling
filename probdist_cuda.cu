@@ -2,6 +2,7 @@
 #include "probdist_cuda.hpp"
 
 #include <limits>
+#include <iostream>
 
 namespace CUDA {
 
@@ -46,21 +47,26 @@ namespace CUDA {
     gpu.states = states;
     cudaSetDevice(i_gpu);
     check_error("setting CUDA device");
+    //// reserve memory for reference point (aka 'xs')
+    cudaMalloc((void**) &gpu.xs
+             , sizeof(float) * n_dim);
+    check_error("malloc xs");
     unsigned int max_split_size = 0;
     for (unsigned int state: states) {
-      unsigned int split_size = fe[state].size();
+      unsigned int split_size = fe.at(state).size();
       max_split_size = std::max(split_size
                               , max_split_size);
       gpu.split_sizes[state] = split_size;
       //// reserve memory for references
       cudaMalloc((void**) &gpu.fe[state]
                , sizeof(float) * split_size);
+      check_error("malloc reference FE");
       cudaMalloc((void**) &gpu.coords[state]
                , sizeof(float) * split_size * gpu.n_dim);
-      check_error("device memory allocation");
+      check_error("malloc reference coords");
       //// copy data to device
       cudaMemcpy(gpu.fe[state]
-               , fe[state].data()
+               , fe.at(state).data()
                , sizeof(float) * split_size
                , cudaMemcpyHostToDevice);
       check_error("copying of state-splitted free energies");
@@ -81,8 +87,10 @@ namespace CUDA {
     unsigned int min_result_size = max_split_size/32 + 1;
     cudaMalloc((void**) gpu.est_fe
              , sizeof(float) * min_result_size);
+    check_error("malloc partial fe results");
     cudaMalloc((void**) gpu.est_neighbors
              , sizeof(unsigned int) * min_result_size);
+    check_error("malloc partial neighbor count");
     // ... and return GPU-settings
     return gpu;
   }
@@ -91,6 +99,8 @@ namespace CUDA {
   clear_gpu(GPUSettings gpu) {
     cudaSetDevice(gpu.id);
     check_error("setting CUDA device");
+    cudaFree(gpu.xs);
+    check_error("freeing memory for xs");
     for (unsigned int state: gpu.states) {
       cudaFree(gpu.fe[state]);
       check_error("freeing memory for free energies");
@@ -102,6 +112,12 @@ namespace CUDA {
     cudaFree(gpu.est_neighbors);
     check_error("freeing memory for partial neighbor count");
   }
+
+  unsigned int
+  min_multiplicator(unsigned int orig
+                  , unsigned int mult) {
+    return (unsigned int) std::ceil(orig / ((float) mult));
+  };
 
   __global__ void
   fe_estimate_krnl(float* xs
@@ -156,7 +172,7 @@ namespace CUDA {
         s_neighbors[tid] = 0;
       }
     }
-    _syncthreads();
+    __syncthreads();
     // local reduction of intermediate results
     // with unrolled loop in single warp
     for (unsigned int s=bsize/2; s > 32; s>>=1) {
@@ -194,6 +210,7 @@ namespace CUDA {
 
   float
   fe_estimate(const std::vector<float>& xs
+            , float rad2
             , unsigned int state
             , const std::vector<GPUSettings>& gpus) {
     int n_gpus = gpus.size();
@@ -204,79 +221,76 @@ namespace CUDA {
                 << std::endl;
       exit(EXIT_FAILURE);
     }
-    unsigned int n_rows = gpus[0].split_sizes[state];
+    unsigned int n_rows = gpus[0].split_sizes.at(state);
+    unsigned int n_cols = gpus[0].n_dim;
     unsigned int gpu_range = n_rows / n_gpus;
     int i_gpu;
     unsigned int i_from;
     unsigned int i_to;
-    unsigned int block_range;
+    unsigned int block_rng;
+    unsigned int shared_mem_size;
     // partial estimates: pair of {#neighbors, sum(FE)}
     std::vector<std::pair<unsigned int, float>> partial_estimates(n_gpus);
+    //// parallelize over available GPUs
     #pragma omp parallel for default(none)\
-      private(i_gpu,i_from,i_to,block_range)\
-      firstprivate(n_gpus,n_rows,n_cols,gpu_range)\
-      shared(partial_estimates,state,xs)\
+      private(i_gpu,i_from,i_to,block_rng,shared_mem_size)\
+      firstprivate(rad2,n_gpus,n_rows,n_cols,gpu_range)\
+      shared(partial_estimates,state,xs,gpus)\
       num_threads(n_gpus)\
       schedule(dynamic,1)
     for (i_gpu=0; i_gpu < n_gpus; ++i_gpu) {
-      // use available GPUs in parallel to
-      // compute partial estimates
-//      partial_estimates[i] = fe_estimate_partial(xs
-//                                               , state
-//                                               , i*gpu_range
-//                                               , i == (n_gpus-1)
-//                                                   ? n_rows
-//                                                   : (i+1)*gpu_range
-//                                               , gpus[i]);
-
+      cudaSetDevice(i_gpu);
+      check_error("set device");
+      // set ranges for this GPU
       i_from = i_gpu * gpu_range;
       if (i_gpu == n_gpus-1) {
-        i_to = n_rows
+        i_to = n_rows;
       } else {
         i_to = (i_gpu+1) * gpu_range;
       }
-      // TODO correct shared mem size
+      cudaMemcpy(gpus[i_gpu].xs
+               , xs.data()
+               , sizeof(float) * n_cols
+               , cudaMemcpyHostToDevice);
+      check_error("copy reference point coordinates to device");
+      //TODO implement min_multiplicator
       block_rng = min_multiplicator(i_to-i_from, BSIZE);
-
-
-      //TODO: set CUDA device
-
-
-      //TODO: correct kernel parameters / shared_mem size
+      shared_mem_size = sizeof(float) * (BSIZE+1) * n_cols;
+      // kernel call
       fe_estimate_krnl
       <<< block_rng
         , BSIZE
-        , shared_mem >>> (i*block_size
-                        , d_coords
-                        , n_rows
-                        , n_cols
-                        , d_rad2
-                        , n_radii
-                        , d_neighbors
-                        , i_from
-                        , i_to);
-      /////
-
-
+        , shared_mem_size >>> (gpus[i_gpu].xs
+                             , gpus[i_gpu].coords.at(state)
+                             , gpus[i_gpu].fe.at(state)
+                             , rad2
+                             , gpus[i_gpu].est_neighbors
+                             , gpus[i_gpu].est_fe
+                             , n_rows
+                             , n_cols
+                             , i_from
+                             , i_to);
       cudaDeviceSynchronize();
       check_error("after kernel call");
       // retrieve partial results
       std::vector<float> est_fe(block_rng);
       std::vector<unsigned int> est_neighbors(block_rng);
-      cudaMemcpy(gpu.est_fe
+      cudaMemcpy(gpus[i_gpu].est_fe
                , est_fe.data()
                , sizeof(float) * block_rng
                , cudaMemcpyDeviceToHost);
-      cudaMemcpy(gpu.est_neighbors
+      check_error("copy fe estimate from device");
+      cudaMemcpy(gpus[i_gpu].est_neighbors
                , est_neighbors.data()
                , sizeof(float) * block_rng
                , cudaMemcpyDeviceToHost);
+      check_error("copy neighbor estimate from device");
       // accumulate partial results per GPU
       for (auto fe: est_fe) {
-        partial_estimates[i].second += fe;
+        partial_estimates[i_gpu].second += fe;
       }
       for (auto n_neighbors: est_neighbors) {
-        partial_estimates[i].first += n_neighbors;
+        partial_estimates[i_gpu].first += n_neighbors;
       }
     }
     // combine results from GPUs

@@ -147,22 +147,58 @@ StateSampler::StateSampler(const std::vector<unsigned int>& states
                                            , _fe_splitted[s].end()));
   }
   _n_dim = ref_coords[0].size();
+#ifdef USE_CUDA
+  int n_gpus = CUDA::get_num_gpus();
+  if (n_gpus < 1) {
+    std::cerr << "error: no CUDA-capable GPU(s) found. If you are sure to"
+              << " have one, please check your CUDA/driver setup."
+              << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  for (int i_gpu=0; i_gpu < n_gpus; ++i_gpu) {
+    _gpus.push_back(CUDA::prepare_gpu(i_gpu
+                                    , _n_dim
+                                    , _states
+                                    , _fe_splitted
+                                    , _ref_coords_splitted));
+  }
+#endif
 }
 
+#ifdef USE_CUDA
+StateSampler::~StateSampler() {
+  for (auto gpu: _gpus) {
+    CUDA::clear_gpu(gpu);
+  }
+}
+#endif
 
-//TODO: idea: use simulation temp + ref. temp to scale according to temperature
+
+
+
+//TODO: idea: use simulation temp + ref. temp
+//            to scale according to temperature
 
 
 Sample
 StateSampler::operator()(unsigned int state) {
   std::vector<float> new_sample_coords(_n_dim);
   float new_sample_fe;
+#ifdef USE_CUDA
+  auto new_fe = [&]() -> float {
+    return CUDA::fe_estimate(new_sample_coords
+                           , _radius_squared
+                           , state
+                           , _gpus);
+  };
+#else
   auto new_fe = [&]() -> float {
     return fe_estimate(new_sample_coords
                      , _radius_squared
                      , _fe_splitted[state]
                      , _ref_coords_splitted[state]);
   };
+#endif
   if (state == _prev_state) {
     bool no_sample_found = true;
     while (no_sample_found) {
@@ -209,11 +245,6 @@ StateSampler::operator()(unsigned int state) {
   _prev_state = state;
   return new_sample;
 }
-
-
-
-
-
 
 
 

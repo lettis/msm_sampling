@@ -2,6 +2,10 @@
 
 #define BSIZE 128
 
+#include <unordered_map>
+#include <vector>
+
+
 namespace CUDA {
 
   typedef std::unordered_map<unsigned int
@@ -10,11 +14,11 @@ namespace CUDA {
   typedef std::unordered_map<unsigned int
                            , std::vector<std::vector<float>>> SplitCoord;
 
-
   struct GPUSettings {
     int id;
     std::vector<unsigned int> states;
     unsigned int n_dim;
+    float* xs;
     std::unordered_map<unsigned int, unsigned int> split_sizes;
     std::unordered_map<unsigned int, float*> fe;
     std::unordered_map<unsigned int, float*> coords;
@@ -38,23 +42,16 @@ namespace CUDA {
   void
   clear_gpu(GPUSettings settings);
 
+  //! return minimum multiplicator to fulfill result * mult >= orig
+  unsigned int
+  min_multiplicator(unsigned int orig
+                  , unsigned int mult);
 
-  Pops
-  calculate_populations_partial(const float* coords
-                              , const std::vector<float>& sorted_coords
-                              , const std::vector<float>& blimits
-                              , std::size_t n_rows
-                              , std::size_t n_cols
-                              , std::vector<float> radii
-                              , std::size_t i_from
-                              , std::size_t i_to
-                              , int i_gpu);
-  
-  Pops
-  calculate_populations(const float* coords
-                      , const std::size_t n_rows
-                      , const std::size_t n_cols
-                      , std::vector<float> radii);
+  float
+  fe_estimate(const std::vector<float>& xs
+            , float rad2
+            , unsigned int state
+            , const std::vector<GPUSettings>& gpus);
 
 } // end namespace CUDA
 

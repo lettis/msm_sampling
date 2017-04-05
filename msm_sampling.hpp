@@ -4,6 +4,10 @@
 #include <string>
 #include <unordered_map>
 
+#ifdef USE_CUDA
+  #include "probdist_cuda.hpp"
+#endif
+
 
 typedef std::pair<float, std::vector<float>> Sample;
 
@@ -63,6 +67,10 @@ class StateSampler {
              , const std::vector<std::vector<float>>& ref_coords
              , float radius
              , MetropolisStepper& stepper);
+#ifdef USE_CUDA
+  // clear GPUs in destructor
+  ~StateSampler();
+#endif
   Sample operator()(unsigned int state);
 
  private:
@@ -88,22 +96,8 @@ class StateSampler {
     _ref_coords_splitted;
   // dimensionality
   unsigned int _n_dim;
+#ifdef USE_CUDA
+  std::vector<CUDA::GPUSettings> _gpus;
+#endif
 };
-
-
-//void
-//compute_fe_estimates(const std::vector<float>& ref_free_energies
-//                   , const std::vector<std::vector<float>>& ref_coords
-//                   , float radius
-//                   , std::string fname_out);
-
-//void
-//sample_traj(const std::vector<unsigned int>& traj
-//          , const std::vector<unsigned int>& states
-//          , const std::vector<unsigned int>& pops
-//          , const std::vector<std::vector<float>>& coords
-//          , unsigned int batchsize
-//          , float radius
-//          , std::string fname_out);
-
 

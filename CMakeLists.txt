@@ -22,7 +22,7 @@
 # EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 cmake_minimum_required (VERSION 2.8)
-project (sampling) 
+project (msm_sampling) 
 
 # do we want static libraries?
 # When STATIC_LINKING is set, cmake looks for libraries called *.a.
@@ -48,38 +48,6 @@ if (${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra")
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas")
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wmissing-declarations")
-
-  if (NATIVE_COMPILATION)
-    message("native compilation: this code will ONLY run on THIS machine")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-  endif()
-  set (DC_MEM_ALIGNMENT 32)
-  if (CPU_ACCELERATION)
-    if (${CPU_ACCELERATION} STREQUAL "SSE2")
-      message("using SSE2")
-      set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse2")
-      set (DC_MEM_ALIGNMENT 16)
-
-    elseif (${CPU_ACCELERATION} STREQUAL "SSE4_1")
-      message("using SSE4_1")
-      set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1")
-      set (DC_MEM_ALIGNMENT 16)
-
-    elseif (${CPU_ACCELERATION} STREQUAL "SSE4_2")
-      message("using SSE4_2")
-      set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2")
-      set (DC_MEM_ALIGNMENT 16)
-
-    elseif (${CPU_ACCELERATION} STREQUAL "AVX")
-      message("using AVX")
-      set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx")
-      set (DC_MEM_ALIGNMENT 32)
-    else()
-      message(SEND_ERROR "unknown instruction set: ${CPU_ACCELERATION}")
-    endif()
-  else()
-    message("using standard CPU acceleration with memory aligned at ${DC_MEM_ALIGNMENT} bytes")
-  endif()
 else()
   message(SEND_ERROR "currently no other compiler than the GCC is supported. sorry.")
 endif()
@@ -114,7 +82,6 @@ set (PROGNAME msm_sampling)
 
 
 if (${USE_CUDA})
-  #set (PROGNAME ${PROGNAME}.cuda)
   cuda_add_executable(${PROGNAME} ${SRCS})
 else()
   add_executable(${PROGNAME} ${SRCS})
