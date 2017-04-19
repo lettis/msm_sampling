@@ -158,7 +158,7 @@ StateSampler::StateSampler(const std::vector<unsigned int>& states
   for (int i_gpu=0; i_gpu < n_gpus; ++i_gpu) {
     _gpus.push_back(CUDA::prepare_gpu(i_gpu
                                     , _n_dim
-                                    , _states
+                                    , state_names
                                     , _fe_splitted
                                     , _ref_coords_splitted));
   }

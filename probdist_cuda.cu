@@ -38,13 +38,13 @@ namespace CUDA {
   GPUSettings
   prepare_gpu(int i_gpu
             , unsigned int n_dim
-            , std::vector<unsigned int> states
+            , std::unordered_set<unsigned int> state_names
             , const SplitFe& fe
             , const SplitCoord& ref_coords) {
     GPUSettings gpu;
     gpu.id = i_gpu;
     gpu.n_dim = n_dim;
-    gpu.states = states;
+    gpu.state_names = state_names;
     cudaSetDevice(i_gpu);
     check_error("setting CUDA device");
     //// reserve memory for reference point (aka 'xs')
@@ -52,7 +52,7 @@ namespace CUDA {
              , sizeof(float) * n_dim);
     check_error("malloc xs");
     unsigned int max_split_size = 0;
-    for (unsigned int state: states) {
+    for (unsigned int state: state_names) {
       unsigned int split_size = fe.at(state).size();
       max_split_size = std::max(split_size
                               , max_split_size);
@@ -85,10 +85,10 @@ namespace CUDA {
     }
     //// allocate memory for partial results
     unsigned int min_result_size = max_split_size/32 + 1;
-    cudaMalloc((void**) gpu.est_fe
+    cudaMalloc((void**) &gpu.est_fe
              , sizeof(float) * min_result_size);
     check_error("malloc partial fe results");
-    cudaMalloc((void**) gpu.est_neighbors
+    cudaMalloc((void**) &gpu.est_neighbors
              , sizeof(unsigned int) * min_result_size);
     check_error("malloc partial neighbor count");
     // ... and return GPU-settings
@@ -101,7 +101,7 @@ namespace CUDA {
     check_error("setting CUDA device");
     cudaFree(gpu.xs);
     check_error("freeing memory for xs");
-    for (unsigned int state: gpu.states) {
+    for (unsigned int state: gpu.state_names) {
       cudaFree(gpu.fe[state]);
       check_error("freeing memory for free energies");
       cudaFree(gpu.coords[state]);
@@ -213,6 +213,11 @@ namespace CUDA {
             , float rad2
             , unsigned int state
             , const std::vector<GPUSettings>& gpus) {
+
+
+    //TODO: error in fe estimation (values around 10^38)
+
+
     int n_gpus = gpus.size();
     if (n_gpus == 0) {
       std::cerr << "error: unable to estimate free energies on GPU(s)."
@@ -275,14 +280,14 @@ namespace CUDA {
       // retrieve partial results
       std::vector<float> est_fe(block_rng);
       std::vector<unsigned int> est_neighbors(block_rng);
-      cudaMemcpy(gpus[i_gpu].est_fe
-               , est_fe.data()
+      cudaMemcpy(est_fe.data()
+               , gpus[i_gpu].est_fe
                , sizeof(float) * block_rng
                , cudaMemcpyDeviceToHost);
       check_error("copy fe estimate from device");
-      cudaMemcpy(gpus[i_gpu].est_neighbors
-               , est_neighbors.data()
-               , sizeof(float) * block_rng
+      cudaMemcpy(est_neighbors.data()
+               , gpus[i_gpu].est_neighbors
+               , sizeof(unsigned int) * block_rng
                , cudaMemcpyDeviceToHost);
       check_error("copy neighbor estimate from device");
       // accumulate partial results per GPU

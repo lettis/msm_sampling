@@ -2,6 +2,7 @@
 
 #define BSIZE 128
 
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
@@ -16,7 +17,7 @@ namespace CUDA {
 
   struct GPUSettings {
     int id;
-    std::vector<unsigned int> states;
+    std::unordered_set<unsigned int> state_names;
     unsigned int n_dim;
     float* xs;
     std::unordered_map<unsigned int, unsigned int> split_sizes;
@@ -35,7 +36,7 @@ namespace CUDA {
   GPUSettings
   prepare_gpu(int i_gpu
             , unsigned int n_dim
-            , std::vector<unsigned int> states
+            , std::unordered_set<unsigned int> state_names
             , const SplitFe& fe
             , const SplitCoord& ref_coords);
 
