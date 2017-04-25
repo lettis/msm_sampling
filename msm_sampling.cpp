@@ -223,12 +223,14 @@ StateSampler::operator()(unsigned int state) {
   } else {
     bool no_sample_found = true;
     while (no_sample_found) {
-      // sample new coordinates 'out of the blue'
+      std::vector<float> step = _stepper();
+      // sample first coords from reference
+      unsigned int i_ref = (unsigned int)
+                           ((_ref_coords_splitted[state].size()-1)
+                          * _dice());
+      new_sample_coords = _ref_coords_splitted[state][i_ref];
       for (unsigned int i=0; i < _n_dim; ++i) {
-        new_sample_coords[i] = _min_max[state][i].first
-                             + _dice()
-                             * (_min_max[state][i].second
-                              - _min_max[state][i].first);
+        new_sample_coords[i] += step[i] * _dice();
       }
       // always accept new sample as long as energy < max(state_energy)
       new_sample_fe = new_fe();

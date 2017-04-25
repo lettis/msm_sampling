@@ -4,6 +4,8 @@
 #include <limits>
 #include <iostream>
 
+#include <stdio.h>
+
 namespace CUDA {
 
   void
@@ -74,7 +76,7 @@ namespace CUDA {
       std::vector<float> tmp_coords(n_dim * split_size);
       for (unsigned int i=0; i < split_size; ++i) {
         for (unsigned int j=0; j < n_dim; ++j) {
-          tmp_coords[i*split_size+j];
+          tmp_coords[i*n_dim+j] = ref_coords.at(state)[i][j];
         }
       }
       cudaMemcpy(gpu.coords[state]
@@ -135,41 +137,28 @@ namespace CUDA {
     unsigned int bid = blockIdx.x;
     unsigned int tid = threadIdx.x;
     unsigned int gid = bid * bsize + tid + i_from;
-    // locally shared memory for fast access
-    //  coords has size [(bsize+1) x n_cols] for
-    //  bsize rows of ref-coords + 1 row of xs.
-    extern __shared__ float s_coords[];
+    // locally shared memory for fast access of xs
+    extern __shared__ float s_xs[];
     __shared__ float s_fe[BSIZE];
     __shared__ unsigned int s_neighbors[BSIZE];
-    if (gid < i_to) {
-      // coalasced read of reference coords/fe
-      for (unsigned int j=0; j < n_cols; ++j) {
-        s_coords[(tid+1)*n_cols + j] = ref_coords[(tid+bsize*bid)*n_cols+j];
-      }
-      s_fe[tid] = ref_fe[gid];
-      s_neighbors[tid] = 1;
-      if (tid == 0) {
-        // read xs to local mem
-        for (unsigned int j=0; j < n_cols; ++j) {
-          s_coords[j] = xs[j];
-        }
-      }
-    } else {
-      s_fe[tid] = 0.0f;
-      s_neighbors[tid] = 0;
+    // initialize results
+    s_fe[tid] = 0.0f;
+    s_neighbors[tid] = 0;
+    // read xs to shared mem
+    if (tid < n_cols) {
+      s_xs[tid] = xs[tid];
     }
     __syncthreads();
-    // filter out all frames with distance (d2)
-    // larger than cutoff (rad2)
     if (gid < i_to) {
       float d2 = 0.0f;
       for (unsigned int j=0; j < n_cols; ++j) {
-        float d = (s_coords[(tid+1)*n_cols + j] - xs[j]);
+        float d = ref_coords[gid*n_cols+j] - s_xs[j];
         d2 += d*d;
       }
-      if (rad2 < d2) {
-        s_fe[tid] = 0.0f;
-        s_neighbors[tid] = 0;
+      //TODO rad2 is ALWAYS smaller!
+      if (d2 < rad2) {
+        s_fe[tid] = ref_fe[gid];
+        s_neighbors[tid] = 1;
       }
     }
     __syncthreads();
@@ -213,11 +202,6 @@ namespace CUDA {
             , float rad2
             , unsigned int state
             , const std::vector<GPUSettings>& gpus) {
-
-
-    //TODO: error in fe estimation (values around 10^38)
-
-
     int n_gpus = gpus.size();
     if (n_gpus == 0) {
       std::cerr << "error: unable to estimate free energies on GPU(s)."
@@ -237,12 +221,12 @@ namespace CUDA {
     // partial estimates: pair of {#neighbors, sum(FE)}
     std::vector<std::pair<unsigned int, float>> partial_estimates(n_gpus);
     //// parallelize over available GPUs
-    #pragma omp parallel for default(none)\
-      private(i_gpu,i_from,i_to,block_rng,shared_mem_size)\
-      firstprivate(rad2,n_gpus,n_rows,n_cols,gpu_range)\
-      shared(partial_estimates,state,xs,gpus)\
-      num_threads(n_gpus)\
-      schedule(dynamic,1)
+//    #pragma omp parallel for default(none)\
+//      private(i_gpu,i_from,i_to,block_rng,shared_mem_size)\
+//      firstprivate(rad2,n_gpus,n_rows,n_cols,gpu_range)\
+//      shared(partial_estimates,state,xs,gpus)\
+//      num_threads(n_gpus)\
+//      schedule(dynamic,1)
     for (i_gpu=0; i_gpu < n_gpus; ++i_gpu) {
       cudaSetDevice(i_gpu);
       check_error("set device");
@@ -260,7 +244,8 @@ namespace CUDA {
       check_error("copy reference point coordinates to device");
       //TODO implement min_multiplicator
       block_rng = min_multiplicator(i_to-i_from, BSIZE);
-      shared_mem_size = sizeof(float) * (BSIZE+1) * n_cols;
+      //shared_mem_size = sizeof(float) * (BSIZE+1) * n_cols;
+      shared_mem_size = sizeof(float) * n_cols;
       // kernel call
       fe_estimate_krnl
       <<< block_rng
