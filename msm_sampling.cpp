@@ -277,6 +277,8 @@ int main(int argc, char* argv[]) {
     ("output,o", b_po::value<std::string>()->default_value(""),
      "output:           the sampled coordinates / probability estimates."
      " default: stdout.")
+    ("scaling", b_po::value<float>()->default_value(1.0f),
+     "scaling factor for Metropolis step width (default: 1.0)")
     ("append-fe", b_po::bool_switch()->default_value(false),
      "                  append free energy estimate as additional"
      " column to the output coordinates")
@@ -358,8 +360,10 @@ int main(int argc, char* argv[]) {
     fh_out = CoordsFile::open(fname_out, "w");
   }
   //TODO test other stepper functions
-  auto metropolis_stepper = HypersphereStepper(radius
-                                             , n_dim);
+  auto metropolis_stepper =
+    ScaledHypersphereStepper(radius
+                           , std::vector<float>(n_dim
+                                              , args["scaling"].as<float>()));
   // state sampler function: state id -> sample
   StateSampler state_sampler(read_states(args["states"].as<std::string>())
                            , read_fe(args["free-energies"].as<std::string>())
